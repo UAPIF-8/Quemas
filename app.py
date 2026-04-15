@@ -5,10 +5,23 @@ from pyproj import Transformer
 import zipfile
 from datetime import datetime, timedelta, date
 import io
+import unicodedata
 
 st.title("🔥 Generador KMZ Quemas")
 
 archivo = st.file_uploader("Sube Excel", type=["xls", "xlsx"])
+
+# =========================
+# 🧼 NORMALIZADOR DE TEXTO
+# =========================
+def normalizar(texto):
+    if pd.isnull(texto):
+        return ""
+    texto = str(texto).strip().upper()
+    texto = unicodedata.normalize("NFD", texto)
+    texto = "".join(c for c in texto if unicodedata.category(c) != "Mn")
+    return texto
+
 
 if archivo:
 
@@ -45,13 +58,16 @@ if archivo:
         mañana = datetime.today().date() + timedelta(days=1)
         nombre_archivo = f"Quemas vigentes al {mañana.strftime('%d-%m-%Y')}"
 
+        # --- filtro operativo (se mantiene como tu lógica original) ---
         df = df[(df["FECHA_INICIO"] <= mañana) & (df["FECHA_TERMINO"] >= mañana)]
 
         if df.empty:
             st.warning("Sin datos")
             st.stop()
 
-        # --- Coordenadas ---
+        # =========================
+        # 📍 COORDENADAS
+        # =========================
         transformer_18 = Transformer.from_crs("EPSG:32718", "EPSG:4326", always_xy=True)
         transformer_19 = Transformer.from_crs("EPSG:32719", "EPSG:4326", always_xy=True)
 
@@ -64,41 +80,43 @@ if archivo:
 
         df["LATITUD"], df["LONGITUD"] = zip(*df.apply(lambda r: convertir(r["X"], r["Y"]), axis=1))
 
-        # =========================================================
-        # 🔥 REGLA DE COMUNAS RESTRINGIDAS
-        # =========================================================
-
-        comunas_restringidas = [
+        # =========================
+        # 🧠 REGLA DE COMUNAS
+        # =========================
+        comunas_restringidas = {
             "LOS ANGELES",
-            "LOTA",
-            "CORONEL",
-            "SAN PEDRO DE LA PAZ",
+            "TOME",
+            "PENCO",
             "CONCEPCION",
-            "CHIGUAYANTE",
-            "HUALQUI",
             "HUALPEN",
             "TALCAHUANO",
-            "PENCO",
-            "TOME"
-        ]
+            "CHIGUAYANTE",
+            "HUALQUI",
+            "SAN PEDRO DE LA PAZ",
+            "CORONEL",
+            "LOTA"
+        }
 
         fecha_limite = date(2026, 9, 30)
 
-        def es_restringido(row):
-            comuna = str(row["COMUNA"]).upper().strip()
+        # --- normalizar comunas ---
+        df["COMUNA_NORM"] = df["COMUNA"].apply(normalizar)
+
+        # --- regla final ---
+        def es_erroneo(row):
+            comuna = row["COMUNA_NORM"]
             fecha = row["FECHA_INICIO"]
 
             if pd.isnull(fecha):
                 return False
 
-            if comuna in comunas_restringidas and fecha <= fecha_limite:
-                return True
+            return (comuna in comunas_restringidas and fecha <= fecha_limite)
 
-            return False
+        df["ERRONEO"] = df.apply(es_erroneo, axis=1)
 
-        df["RESTRINGIDO"] = df.apply(es_restringido, axis=1)
-
-        # --- KML ---
+        # =========================
+        # 🗺️ KML
+        # =========================
         kml = simplekml.Kml()
         icono = "http://maps.google.com/mapfiles/kml/shapes/firedept.png"
 
@@ -139,8 +157,10 @@ if archivo:
 
             p = kml.newpoint(coords=[(row["LONGITUD"], row["LATITUD"])])
 
-            # 🔥 SOLO 2 COLORES
-            if row["RESTRINGIDO"]:
+            # =========================
+            # 🎯 SOLO 2 COLORES
+            # =========================
+            if row["ERRONEO"]:
                 p.style.iconstyle.color = "ff000000"  # ⚫ negro
             else:
                 p.style.iconstyle.color = "ff0000ff"  # 🔴 rojo
@@ -151,7 +171,9 @@ if archivo:
             p.style.iconstyle.scale = 0.8
             p.description = html
 
-        # --- Guardar KMZ ---
+        # =========================
+        # 📦 KMZ
+        # =========================
         kml.save("temp.kml")
 
         with zipfile.ZipFile("temp.kmz", "w") as kmz:
@@ -160,40 +182,13 @@ if archivo:
         with open("temp.kmz", "rb") as f:
             kmz_bytes = f.read()
 
-        # --- Excel ---
-        df_export = df.copy()
-
-        columnas_eliminar_aux = ["FECHA_INICIO", "FECHA_TERMINO"]
-        df_export = df_export.drop(columns=[c for c in columnas_eliminar_aux if c in df_export.columns])
-
-        columnas_a_eliminar = df_export.columns[18:21]
-        df_export = df_export.drop(columns=columnas_a_eliminar, errors="ignore")
-
-        columnas = list(df_export.columns)
-
-        if len(columnas) > 14:
-            columnas[14] = "FECHA INICIO"
-        if len(columnas) > 15:
-            columnas[15] = "FECHA TÉRMINO"
-        if len(columnas) > 16:
-            columnas[16] = "HORA INICIO"
-        if len(columnas) > 17:
-            columnas[17] = "HORA FIN"
-
-        df_export.columns = columnas
-
-        for col in ["FECHA INICIO", "FECHA TÉRMINO"]:
-            if col in df_export.columns:
-                df_export[col] = pd.to_datetime(df_export[col], errors='coerce').dt.strftime("%d-%m-%Y")
-
-        for col in ["HORA INICIO", "HORA FIN"]:
-            if col in df_export.columns:
-                df_export[col] = pd.to_datetime(df_export[col], errors='coerce').dt.strftime("%H:%M")
-
+        # =========================
+        # 📊 EXCEL
+        # =========================
         excel_bytes = io.BytesIO()
-        df_export.to_excel(excel_bytes, index=False)
+        df.to_excel(excel_bytes, index=False)
 
-        st.success("✅ KMZ generado con validación por comunas")
+        st.success("✅ KMZ generado correctamente")
 
         st.download_button("Descargar KMZ", kmz_bytes, file_name=f"{nombre_archivo}.kmz")
         st.download_button("Descargar Excel", excel_bytes.getvalue(), file_name=f"{nombre_archivo}.xlsx")
