@@ -6,13 +6,23 @@ import zipfile
 from datetime import datetime, timedelta, date
 import io
 
-# 🔥 NUEVO
+# 🔥 NUEVO (GIS)
 import geopandas as gpd
 from shapely.geometry import Point
+import unicodedata
 
 st.title("🔥 Generador KMZ Quemas")
 
 archivo = st.file_uploader("Sube Excel", type=["xls", "xlsx"])
+
+# =========================
+# 🧼 NORMALIZADOR TEXTO
+# =========================
+def normalizar(texto):
+    texto = str(texto)
+    texto = unicodedata.normalize("NFD", texto)
+    texto = "".join(c for c in texto if unicodedata.category(c) != "Mn")
+    return texto.upper().strip()
 
 if archivo:
 
@@ -71,21 +81,30 @@ if archivo:
         df["LATITUD"], df["LONGITUD"] = zip(*df.apply(lambda r: convertir(r["X"], r["Y"]), axis=1))
 
         # =========================
-        # 🌍 API COMUNAS (GeoJSON)
+        # 🌍 CARGA GEOJSON COMUNAS
         # =========================
-
-        # 🔥 Fuente GeoJSON comunas Chile
         url_geojson = "https://raw.githubusercontent.com/caracena/chile-geojson/master/8.geojson"
 
         gdf = gpd.read_file(url_geojson)
 
-        # ⚠️ Nombre de columna puede variar
-        # revisamos nombres disponibles
-        nombre_col = "NOM_COMUNA" if "NOM_COMUNA" in gdf.columns else gdf.columns[0]
+        # Detectar columna nombre automáticamente
+        possible_cols = ["NOM_COMUNA", "COMUNA", "NOMBRE"]
+        nombre_col = None
 
-        gdf["NOMBRE"] = gdf[nombre_col].str.upper()
+        for col in possible_cols:
+            if col in gdf.columns:
+                nombre_col = col
+                break
 
-        # --- Comunas restringidas ---
+        if nombre_col is None:
+            nombre_col = gdf.columns[0]
+
+        # 🔥 CORRECCIÓN ERROR .str
+        gdf["NOMBRE"] = gdf[nombre_col].apply(normalizar)
+
+        # =========================
+        # 🧠 COMUNAS RESTRINGIDAS
+        # =========================
         comunas_restringidas = [
             "LOS ANGELES",
             "TOME",
@@ -100,13 +119,15 @@ if archivo:
             "LOTA"
         ]
 
+        comunas_restringidas = [normalizar(c) for c in comunas_restringidas]
+
         gdf_restringidas = gdf[gdf["NOMBRE"].isin(comunas_restringidas)]
 
         # --- Fecha límite ---
         fecha_limite = date(2026, 9, 30)
 
         # =========================
-        # 🔥 FUNCIÓN GEOGRÁFICA
+        # 🔥 VALIDACIÓN GEOGRÁFICA
         # =========================
         def es_erroneo(row):
             if pd.isnull(row["FECHA_INICIO"]):
