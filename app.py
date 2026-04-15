@@ -3,7 +3,7 @@ import pandas as pd
 import simplekml
 from pyproj import Transformer
 import zipfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import io
 
 st.title("🔥 Generador KMZ Quemas")
@@ -24,7 +24,7 @@ if archivo:
 
     if st.button("Procesar"):
 
-        # --- Columnas base (igual Colab) ---
+        # --- Columnas base ---
         col_provincia = "PROVINCIA"
         col_rol = "ROL"
         col_hora_inicio = "INICIO.1"
@@ -35,7 +35,7 @@ if archivo:
         provincias_validas = ["CONCEPCION", "BIO-BIO", "ARAUCO"]
         df = df[df[col_provincia].astype(str).str.upper().str.strip().isin(provincias_validas)]
 
-        # --- Fechas igual Colab ---
+        # --- Fechas ---
         df["INICIO"] = pd.to_datetime(df["INICIO"], errors='coerce', dayfirst=True)
         df["TERMINO"] = pd.to_datetime(df["TERMINO"], errors='coerce', dayfirst=True)
 
@@ -51,7 +51,7 @@ if archivo:
             st.warning("Sin datos")
             st.stop()
 
-        # --- Coordenadas EXACTAS Colab ---
+        # --- Coordenadas ---
         transformer_18 = Transformer.from_crs("EPSG:32718", "EPSG:4326", always_xy=True)
         transformer_19 = Transformer.from_crs("EPSG:32719", "EPSG:4326", always_xy=True)
 
@@ -64,9 +64,42 @@ if archivo:
 
         df["LATITUD"], df["LONGITUD"] = zip(*df.apply(lambda r: convertir(r["X"], r["Y"]), axis=1))
 
-        # --- KML igual Colab ---
-        kml = simplekml.Kml()
+        # =========================================================
+        # 🔥 REGLA DE COMUNAS RESTRINGIDAS
+        # =========================================================
 
+        comunas_restringidas = [
+            "LOS ANGELES",
+            "LOTA",
+            "CORONEL",
+            "SAN PEDRO DE LA PAZ",
+            "CONCEPCION",
+            "CHIGUAYANTE",
+            "HUALQUI",
+            "HUALPEN",
+            "TALCAHUANO",
+            "PENCO",
+            "TOME"
+        ]
+
+        fecha_limite = date(2026, 9, 30)
+
+        def es_restringido(row):
+            comuna = str(row["COMUNA"]).upper().strip()
+            fecha = row["FECHA_INICIO"]
+
+            if pd.isnull(fecha):
+                return False
+
+            if comuna in comunas_restringidas and fecha <= fecha_limite:
+                return True
+
+            return False
+
+        df["RESTRINGIDO"] = df.apply(es_restringido, axis=1)
+
+        # --- KML ---
+        kml = simplekml.Kml()
         icono = "http://maps.google.com/mapfiles/kml/shapes/firedept.png"
 
         campos_popup = {
@@ -95,10 +128,8 @@ if archivo:
 
                 if "HORA" in nombre and pd.notnull(valor):
                     valor = pd.to_datetime(valor).strftime("%H:%M")
-
                 elif "FECHA" in nombre and pd.notnull(valor):
                     valor = pd.to_datetime(valor).strftime("%d-%m-%Y")
-
                 else:
                     valor = "" if pd.isnull(valor) else str(valor)
 
@@ -108,13 +139,16 @@ if archivo:
 
             p = kml.newpoint(coords=[(row["LONGITUD"], row["LATITUD"])])
 
-            # 🔥 EXACTO como Colab
+            # 🔥 SOLO 2 COLORES
+            if row["RESTRINGIDO"]:
+                p.style.iconstyle.color = "ff000000"  # ⚫ negro
+            else:
+                p.style.iconstyle.color = "ff0000ff"  # 🔴 rojo
+
             p.name = str(row[col_rol])
             p.style.labelstyle.scale = 0
-
             p.style.iconstyle.icon.href = icono
-            p.style.iconstyle.scale = 0.8  # 👈 FIX tamaño original
-
+            p.style.iconstyle.scale = 0.8
             p.description = html
 
         # --- Guardar KMZ ---
@@ -126,7 +160,7 @@ if archivo:
         with open("temp.kmz", "rb") as f:
             kmz_bytes = f.read()
 
-        # --- Excel EXACTO como Colab ---
+        # --- Excel ---
         df_export = df.copy()
 
         columnas_eliminar_aux = ["FECHA_INICIO", "FECHA_TERMINO"]
@@ -159,7 +193,7 @@ if archivo:
         excel_bytes = io.BytesIO()
         df_export.to_excel(excel_bytes, index=False)
 
-        st.success("✅ Igual que Colab")
+        st.success("✅ KMZ generado con validación por comunas")
 
         st.download_button("Descargar KMZ", kmz_bytes, file_name=f"{nombre_archivo}.kmz")
         st.download_button("Descargar Excel", excel_bytes.getvalue(), file_name=f"{nombre_archivo}.xlsx")
