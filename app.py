@@ -1,12 +1,35 @@
+
 import streamlit as st
 import pandas as pd
 import simplekml
 from pyproj import Transformer
 import zipfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import io
 
 st.title("🔥 Generador KMZ Quemas")
+
+# =====================================================
+# 1. FECHA Y HORA OFICIAL DE CHILE
+# =====================================================
+
+zona_chile = ZoneInfo("America/Santiago")
+
+ahora_chile = datetime.now(zona_chile)
+hoy_chile = ahora_chile.date()
+mañana = hoy_chile + timedelta(days=1)
+
+fecha_servidor = datetime.now().date()
+fecha_utc = datetime.now(timezone.utc).date()
+
+st.info(
+    f"📅 Fecha actual en Chile: {hoy_chile.strftime('%d-%m-%Y')}\n\n"
+    f"🕒 Hora en Chile: {ahora_chile.strftime('%H:%M:%S')}\n\n"
+    f"📅 Fecha del servidor: {fecha_servidor.strftime('%d-%m-%Y')}\n\n"
+    f"📅 Fecha UTC: {fecha_utc.strftime('%d-%m-%Y')}\n\n"
+    f"🎯 Fecha que se procesará: {mañana.strftime('%d-%m-%Y')}"
+)
 
 archivo = st.file_uploader("Sube Excel", type=["xls", "xlsx"])
 
@@ -24,7 +47,7 @@ if archivo:
 
     if st.button("Procesar"):
 
-        # --- Columnas base (igual Colab) ---
+        # --- Columnas base ---
         col_provincia = "PROVINCIA"
         col_rol = "ROL"
         col_hora_inicio = "INICIO.1"
@@ -33,38 +56,115 @@ if archivo:
 
         # --- Filtrar provincias ---
         provincias_validas = ["CONCEPCION", "BIO-BIO", "ARAUCO"]
-        df = df[df[col_provincia].astype(str).str.upper().str.strip().isin(provincias_validas)]
 
-        # --- Fechas igual Colab ---
-        df["INICIO"] = pd.to_datetime(df["INICIO"], errors='coerce', dayfirst=True)
-        df["TERMINO"] = pd.to_datetime(df["TERMINO"], errors='coerce', dayfirst=True)
+        df = df[
+            df[col_provincia]
+            .astype(str)
+            .str.upper()
+            .str.strip()
+            .isin(provincias_validas)
+        ].copy()
+
+        # =====================================================
+        # 2. CONVERSIÓN DE FECHAS
+        # =====================================================
+
+        df["INICIO"] = pd.to_datetime(
+            df["INICIO"], errors="coerce", dayfirst=True
+        )
+
+        df["TERMINO"] = pd.to_datetime(
+            df["TERMINO"], errors="coerce", dayfirst=True
+        )
 
         df["FECHA_INICIO"] = df["INICIO"].dt.date
         df["FECHA_TERMINO"] = df["TERMINO"].dt.date
 
-        mañana = datetime.today().date() + timedelta(days=1)
-        nombre_archivo = f"Quemas vigentes al {mañana.strftime('%d-%m-%Y')}"
+        # =====================================================
+        # 3. FILTRO EXCLUSIVO PARA EL DÍA SIGUIENTE EN CHILE
+        # =====================================================
 
-        df = df[(df["FECHA_INICIO"] <= mañana) & (df["FECHA_TERMINO"] >= mañana)]
+        fecha_objetivo = mañana
+
+        nombre_archivo = (
+            f"Quemas vigentes al {fecha_objetivo.strftime('%d-%m-%Y')}"
+        )
+
+        df = df[
+            (df["FECHA_INICIO"] <= fecha_objetivo) &
+            (df["FECHA_TERMINO"] >= fecha_objetivo)
+        ].copy()
 
         if df.empty:
-            st.warning("Sin datos")
+            st.warning(
+                f"No existen quemas vigentes para el día "
+                f"{fecha_objetivo.strftime('%d-%m-%Y')}."
+            )
             st.stop()
 
-        # --- Coordenadas EXACTAS Colab ---
-        transformer_18 = Transformer.from_crs("EPSG:32718", "EPSG:4326", always_xy=True)
-        transformer_19 = Transformer.from_crs("EPSG:32719", "EPSG:4326", always_xy=True)
+        # --- Control de fechas seleccionadas ---
+
+        st.success(
+            f"Se encontraron {len(df)} quemas vigentes para "
+            f"el {fecha_objetivo.strftime('%d-%m-%Y')}."
+        )
+
+        st.write("### 🔎 Verificación de fechas seleccionadas")
+
+        st.write(
+            "Fecha más antigua de inicio:",
+            df["FECHA_INICIO"].min().strftime("%d-%m-%Y")
+        )
+
+        st.write(
+            "Fecha más reciente de inicio:",
+            df["FECHA_INICIO"].max().strftime("%d-%m-%Y")
+        )
+
+        st.write(
+            "Fecha más antigua de término:",
+            df["FECHA_TERMINO"].min().strftime("%d-%m-%Y")
+        )
+
+        st.write(
+            "Fecha más reciente de término:",
+            df["FECHA_TERMINO"].max().strftime("%d-%m-%Y")
+        )
+
+        # =====================================================
+        # 4. CONVERSIÓN DE COORDENADAS
+        # =====================================================
+
+        transformer_18 = Transformer.from_crs(
+            "EPSG:32718", "EPSG:4326", always_xy=True
+        )
+
+        transformer_19 = Transformer.from_crs(
+            "EPSG:32719", "EPSG:4326", always_xy=True
+        )
 
         def convertir(x, y):
+
             lon18, lat18 = transformer_18.transform(x, y)
+
             if -38.5 <= lat18 <= -36 and -74 <= lon18 <= -71:
                 return lat18, lon18
+
             lon19, lat19 = transformer_19.transform(x, y)
+
             return lat19, lon19
 
-        df["LATITUD"], df["LONGITUD"] = zip(*df.apply(lambda r: convertir(r["X"], r["Y"]), axis=1))
+        df["LATITUD"], df["LONGITUD"] = zip(
+            *df.apply(
+                lambda r: convertir(r["X"], r["Y"]),
+                axis=1
+            )
+        )
 
-        # --- KML igual Colab ---
+        # =====================================================
+        # 5. GENERACIÓN KMZ
+        # =====================================================
+
         kml = simplekml.Kml()
 
         icono = "http://maps.google.com/mapfiles/kml/shapes/firedept.png"
@@ -91,6 +191,7 @@ if archivo:
             html = "<table border='1' style='border-collapse:collapse;'>"
 
             for nombre, col in campos_popup.items():
+
                 valor = row.get(col, "")
 
                 if "HORA" in nombre and pd.notnull(valor):
@@ -106,18 +207,22 @@ if archivo:
 
             html += "</table>"
 
-            p = kml.newpoint(coords=[(row["LONGITUD"], row["LATITUD"])])
+            p = kml.newpoint(
+                coords=[(row["LONGITUD"], row["LATITUD"])]
+            )
 
-            # 🔥 EXACTO como Colab
             p.name = str(row[col_rol])
             p.style.labelstyle.scale = 0
 
             p.style.iconstyle.icon.href = icono
-            p.style.iconstyle.scale = 0.8  # 👈 FIX tamaño original
+            p.style.iconstyle.scale = 0.8
 
             p.description = html
 
-        # --- Guardar KMZ ---
+        # =====================================================
+        # 6. GUARDAR KMZ
+        # =====================================================
+
         kml.save("temp.kml")
 
         with zipfile.ZipFile("temp.kmz", "w") as kmz:
@@ -126,40 +231,89 @@ if archivo:
         with open("temp.kmz", "rb") as f:
             kmz_bytes = f.read()
 
-        # --- Excel EXACTO como Colab ---
+        # =====================================================
+        # 7. GENERACIÓN EXCEL
+        # =====================================================
+
         df_export = df.copy()
 
-        columnas_eliminar_aux = ["FECHA_INICIO", "FECHA_TERMINO"]
-        df_export = df_export.drop(columns=[c for c in columnas_eliminar_aux if c in df_export.columns])
+        columnas_eliminar_aux = [
+            "FECHA_INICIO",
+            "FECHA_TERMINO"
+        ]
+
+        df_export = df_export.drop(
+            columns=[
+                c for c in columnas_eliminar_aux
+                if c in df_export.columns
+            ]
+        )
 
         columnas_a_eliminar = df_export.columns[18:21]
-        df_export = df_export.drop(columns=columnas_a_eliminar, errors="ignore")
+
+        df_export = df_export.drop(
+            columns=columnas_a_eliminar,
+            errors="ignore"
+        )
 
         columnas = list(df_export.columns)
 
         if len(columnas) > 14:
             columnas[14] = "FECHA INICIO"
+
         if len(columnas) > 15:
             columnas[15] = "FECHA TÉRMINO"
+
         if len(columnas) > 16:
             columnas[16] = "HORA INICIO"
+
         if len(columnas) > 17:
             columnas[17] = "HORA FIN"
 
         df_export.columns = columnas
 
         for col in ["FECHA INICIO", "FECHA TÉRMINO"]:
+
             if col in df_export.columns:
-                df_export[col] = pd.to_datetime(df_export[col], errors='coerce').dt.strftime("%d-%m-%Y")
+
+                df_export[col] = pd.to_datetime(
+                    df_export[col],
+                    errors="coerce"
+                ).dt.strftime("%d-%m-%Y")
 
         for col in ["HORA INICIO", "HORA FIN"]:
+
             if col in df_export.columns:
-                df_export[col] = pd.to_datetime(df_export[col], errors='coerce').dt.strftime("%H:%M")
+
+                df_export[col] = pd.to_datetime(
+                    df_export[col],
+                    errors="coerce"
+                ).dt.strftime("%H:%M")
 
         excel_bytes = io.BytesIO()
-        df_export.to_excel(excel_bytes, index=False)
 
-        st.success("✅ Igual que Colab")
+        df_export.to_excel(
+            excel_bytes,
+            index=False
+        )
 
-        st.download_button("Descargar KMZ", kmz_bytes, file_name=f"{nombre_archivo}.kmz")
-        st.download_button("Descargar Excel", excel_bytes.getvalue(), file_name=f"{nombre_archivo}.xlsx")
+        # =====================================================
+        # 8. DESCARGAS
+        # =====================================================
+
+        st.success(
+            f"✅ Proceso completado. "
+            f"Quemas correspondientes al {fecha_objetivo.strftime('%d-%m-%Y')}."
+        )
+
+        st.download_button(
+            "Descargar KMZ",
+            kmz_bytes,
+            file_name=f"{nombre_archivo}.kmz"
+        )
+
+        st.download_button(
+            "Descargar Excel",
+            excel_bytes.getvalue(),
+            file_name=f"{nombre_archivo}.xlsx"
+        )
