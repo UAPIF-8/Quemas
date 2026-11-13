@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import io
 
-st.title("🔥 Generador KMZ Quemas")
+st.title("🔥 Generador KMZ Quemas Biobío")
 
 # =====================================================
 # 1. FECHA Y HORA OFICIAL DE CHILE
